@@ -46,15 +46,29 @@ module State = struct
     (* return (xorshifted >> rot) | (xorshifted << ((-rot) & 31)); *)
     Int32.(logor (shift_right_logical xorshifted rot) (shift_left xorshifted (~-rot land 31)))
 
+  (*
+  inline uint64_t pcg_output_rxs_m_xs_64_64(uint64_t state)
+  {
+      uint64_t word = ((state >> ((state >> 59u) + 5u)) ^ state)
+                      * 12605985483714917081ull;
+      return (word >> 43u) ^ word;
+  }
+  *)
+  let rxs_m_xs state =
+    let rot = Int64.(to_int (add (shift_right_logical state 59) 5L)) in
+    let xorshifted = Int64.(logxor (shift_right_logical state rot) state) in
+    let word = Int64.mul xorshifted 0xAEF17502108EF2D9L in
+    Int64.(logxor (shift_right_logical word 43) word)
+
   let bits32 s =
     let oldstate = !s in
     step s;
     xsh_rr oldstate
 
   let bits64 s =
-    let b1 = bits32 s
-    and b2 = bits32 s in
-    Int64.(logor (of_int32 b1) (shift_left (of_int32 b2) 32))
+    let oldstate = !s in
+    step s;
+    rxs_m_xs oldstate
 
   let mix s seed =
     s := Int64.(add !s (of_int seed));
@@ -70,50 +84,17 @@ module State = struct
     full_init result seed;
     result
 
+
   let make_self_init () = make (random_seed ())
 
   let copy s =
     let result = ref !s in
     result
 
+
   (* Returns 30 random bits as an integer 0 <= x < 1073741824 *)
   let bits s =
     Int32.(to_int (logand (bits32 s) 0x3FFFFFFFl))
-
-  let rec intaux s n =
-    let r = bits s in
-    let v = r mod n in
-    if r - v > 0x3FFFFFFF - n + 1 then intaux s n else v
-
-  let int s bound =
-    if bound > 0x3FFFFFFF || bound <= 0
-    then invalid_arg "Random.int"
-    else intaux s bound
-
-  let rec int63aux s n =
-    let max_int_32 = (1 lsl 30) + 0x3FFFFFFF in (* 0x7FFFFFFF *)
-    let (r, max_int) =
-      if n <= max_int_32 then
-        (* 31 random bits on both 64-bit OCaml and JavaScript. *)
-        let bpos = Int32.(to_int (logand (bits32 s) 0x7FFFFFFFl))
-        in (bpos, max_int_32)
-      else
-        (* TODO: Why 62 and not 63? *)
-        (* 62 random bits on 64-bit OCaml; unreachable on JavaScript. *)
-        let bpos = Int64.(to_int (logand (bits64 s) 0x3FFFFFFFFFFFFFFFL))
-        in (bpos, max_int)
-    in
-    let v = r mod n in
-    if r - v > max_int - n + 1 then int63aux s n else v
-
-  let full_int s bound =
-    if bound <= 0 then
-      invalid_arg "Random.full_int"
-    else if bound > 0x3FFFFFFF then
-      int63aux s bound
-    else
-      intaux s bound
-
 
   let rec int32aux s n =
     let r = bits32 s in
@@ -122,12 +103,6 @@ module State = struct
     then int32aux s n
     else v
 
-  let int32 s bound =
-    if bound <= 0l
-    then invalid_arg "Random.int32"
-    else int32aux s bound
-
-
   let rec int64aux s n =
     let r = bits64 s in
     let v = Int64.rem r n in
@@ -135,11 +110,29 @@ module State = struct
     then int64aux s n
     else v
 
+  let full_int s bound =
+    if bound <= 0 then
+      invalid_arg "Random.full_int"
+    else if bound > 0x3FFFFFFF then
+      Int64.(to_int (int64aux s (of_int bound)))
+    else
+      Int32.(to_int (int32aux s (of_int bound)))
+
+
+  let int s bound =
+    if bound > 0x3FFFFFFF || bound <= 0
+    then invalid_arg "Random.int"
+    else Int32.(to_int (int32aux s (of_int bound)))
+
+  let int32 s bound =
+    if bound <= 0l
+    then invalid_arg "Random.int32"
+    else int32aux s bound
+
   let int64 s bound =
     if bound <= 0L
     then invalid_arg "Random.int64"
     else int64aux s bound
-
 
   let nativeint =
     if Nativeint.size = 32
@@ -147,11 +140,11 @@ module State = struct
     else fun s bound -> Int64.to_nativeint (int64 s (Int64.of_nativeint bound))
 
 
-  (* Returns a float 0 <= x <= 1 with at most 64 bits of precision. *)
+  (* Returns a float 0 <= x <= 1 with at most 60 bits of precision. *)
   let rawfloat s =
-    let scale = 4294967296.0  (* 2^32 *)
-    and r1 = Int32.to_float (bits32 s)
-    and r2 = Int32.to_float (bits32 s)
+    let scale = 1073741824.0  (* 2^30 *)
+    and r1 = Stdlib.float (bits s)
+    and r2 = Stdlib.float (bits s)
     in (r1 /. scale +. r2) /. scale
 
 

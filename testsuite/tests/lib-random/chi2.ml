@@ -25,11 +25,16 @@ let chisquare n f =
      Four sigmas correspond to a 99.9968% confidence interval.
      (Without the approximation, the confidence interval seems to be 99.986%.)
   *)
-  chi2 <= degfree +. 4.0 *. sqrt (2.0 *. degfree)
+  (chi2, degfree +. 4.0 *. sqrt (2.0 *. degfree))
 
 let test name f =
-  if not (chisquare 100_000 f)
-  then Printf.printf "%s: suspicious result\n%!" name
+  let (chi2, limit) = chisquare 100_000 f in
+  if not (chi2 <= limit)
+  then (
+    Printf.printf "%s: suspicious result\n%!" name;
+    Printf.printf "    chi^2 = %f\n" chi2;
+    Printf.printf "    limit = %f\n" limit
+  )
 
 let _ =
   test "Random.bits (bits 0-7)"
