@@ -4,7 +4,7 @@
    OCaml produces the same result on 64-bit OCaml. *)
 let bound = 0x6FFFFFFF in
 if bound < 0 then (* 31-bit integers *)
-  print_endline "4c141994"
+  print_endline "30ab83ad"
 else (* 32 or 64-bit integers *)
   let s = Random.State.make [| 43 |] in
   Printf.printf "%08x\n" (Random.State.full_int s bound)
