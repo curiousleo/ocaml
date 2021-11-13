@@ -37,6 +37,7 @@ module State = struct
   type t = int64 ref
 
   let new_state () = ref 0x4d595df4d0f33173L
+  let assign st1 st2 = st1 := !st2
 
   let step s =
     let newstate = Int64.(add (mul !s 6364136223846793005L) 1442695040888963407L) in
@@ -81,22 +82,23 @@ module State = struct
       mix s seed.(i)
     done
 
-  let copy s = ref !s
-
-  let assign t s = t := !s
-
-  (* Returns 30 random bits as an integer 0 <= x < 1073741824 *)
-  let bits s =
-    Int32.(to_int (logand (bits32 s) 0x3FFFFFFFl))
-
-  (*****************************)
-
   let make seed =
     let result = new_state () in
     full_init result seed;
     result
 
+
   let make_self_init () = make (random_seed ())
+
+  let copy s =
+    let result = new_state () in
+    assign result s;
+    result
+
+
+  (* Returns 30 random bits as an integer 0 <= x < 1073741824 *)
+  let bits s =
+    Int32.(to_int (logand (bits32 s) 0x3FFFFFFFl))
 
 
   let rec intaux s n =
