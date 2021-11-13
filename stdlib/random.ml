@@ -31,77 +31,6 @@ external random_seed: unit -> int array = "caml_sys_random_seed"
 module State = struct
 
   (****************)
-  (* Xoshiro256++ *)
-  (****************)
-
-  (*
-  type t = {
-    mutable s0 : int64;
-    mutable s1 : int64;
-    mutable s2 : int64;
-    mutable s3 : int64;
-  }
-
-  let new_state () = {
-    s0 = 0xd7ba58ac4f5f8ebaL;
-    s1 = 0x3602218b79c90891L;
-    s2 = 0x35377574a3001a9eL;
-    s3 = 0xf302f188176dfd1cL;
-  }
-
-  let rotl x k =
-    Int64.(logor (shift_left x k) (shift_right_logical x (64 - k)))
-
-  let step s =
-    let t = Int64.shift_left s.s1 17 in
-    s.s2 <- Int64.logxor s.s2 s.s0;
-    s.s3 <- Int64.logxor s.s3 s.s1;
-    s.s1 <- Int64.logxor s.s1 s.s2;
-    s.s0 <- Int64.logxor s.s0 s.s3;
-    s.s2 <- Int64.logxor s.s2 t;
-    s.s3 <- rotl s.s3 45
-
-  let bits64 s =
-    let result = Int64.(add (rotl (add s.s0 s.s3) 23) s.s0) in
-    step s;
-    result
-
-  let bits32 s =
-    let b64 = bits64 s in
-    Int64.(to_int32 (logand b64 0xFFFFFFFFL))
-
-  let mix s seed =
-    s.s0 <- Int64.(add s.s0 (of_int seed));
-    step s
-
-  let full_init s seed =
-    s.s0 <- 0xd7ba58ac4f5f8ebaL;
-    s.s1 <- 0x3602218b79c90891L;
-    s.s2 <- 0x35377574a3001a9eL;
-    s.s3 <- 0xf302f188176dfd1cL;
-    step s;
-    for i = 0 to Array.length seed - 1 do
-      mix s seed.(i)
-    done;
-    for _ = 0 to 16 do
-      step s
-    done
-
-  let copy s = {
-    s0 = s.s0;
-    s1 = s.s1;
-    s2 = s.s2;
-    s3 = s.s3;
-  }
-
-  let assign t s =
-    t.s0 <- s.s0;
-    t.s1 <- s.s1;
-    t.s2 <- s.s2;
-    t.s3 <- s.s3
-  *)
-
-  (****************)
   (* PCG RXS-M-XS *)
   (****************)
 
@@ -113,18 +42,17 @@ module State = struct
     let newstate = Int64.(add (mul !s 6364136223846793005L) 1442695040888963407L) in
     s := newstate
 
+  (* pcg_output_xsh_rr_64_32 *)
   let xsh_rr state =
-    (* uint32_t xorshifted = ((state >> 18u) ^ state) >> 27u; *)
     let xorshifted = Int64.(to_int32 (shift_right_logical (logxor (shift_right_logical state 18) state) 27))
-    (* uint32_t rot = state >> 59u; *)
     and rot = Int64.(to_int (shift_right_logical state 59)) in
-    (* return (xorshifted >> rot) | (xorshifted << ((-rot) & 31)); *)
     Int32.(logor (shift_right_logical xorshifted rot) (shift_left xorshifted (~-rot land 31)))
 
+  (* pcg_output_rxs_m_xs_64_64 *)
   let rxs_m_xs state =
     let rot = Int64.(to_int (add (shift_right_logical state 59) 5L)) in
     let xorshifted = Int64.(logxor (shift_right_logical state rot) state) in
-    let word = Int64.mul xorshifted 0xAEF17502108EF2D9L in
+    let word = Int64.mul xorshifted 0xAEF17502108EF2D9L in (* 12605985483714917081 *)
     Int64.(logxor (shift_right_logical word 43) word)
 
   let bits32 s =
@@ -183,16 +111,15 @@ module State = struct
 
   let rec int63aux s n =
     let max_int_32 = (1 lsl 30) + 0x3FFFFFFF in (* 0x7FFFFFFF *)
-    let b64 = bits64 s in
     let (r, max_int) =
       if n <= max_int_32 then
         (* 31 random bits on both 64-bit OCaml and JavaScript. *)
-        let bpos = Int64.(to_int (logand b64 0x7FFFFFFFL))
+        let bpos = Int32.(to_int (logand (bits32 s) 0x7FFFFFFFl))
         in
           (bpos, max_int_32)
       else
         (* 62 random bits on 64-bit OCaml; unreachable on JavaScript. *)
-        let bpos = Int64.(to_int (logand b64 0x3FFFFFFFFFFFFFFFL))
+        let bpos = Int64.(to_int (logand (bits64 s) 0x3FFFFFFFFFFFFFFFL))
         in
           (bpos, max_int)
     in
@@ -209,9 +136,7 @@ module State = struct
 
 
   let rec int32aux s n =
-    let b1 = Int32.of_int (bits s) in
-    let b2 = Int32.shift_left (Int32.of_int (bits s land 1)) 30 in
-    let r = Int32.logor b1 b2 in
+    let r = Int32.shift_right_logical (bits32 s) 1 in
     let v = Int32.rem r n in
     if Int32.sub r v > Int32.add (Int32.sub Int32.max_int n) 1l
     then int32aux s n
@@ -224,10 +149,7 @@ module State = struct
 
 
   let rec int64aux s n =
-    let b1 = Int64.of_int (bits s) in
-    let b2 = Int64.shift_left (Int64.of_int (bits s)) 30 in
-    let b3 = Int64.shift_left (Int64.of_int (bits s land 7)) 60 in
-    let r = Int64.logor b1 (Int64.logor b2 b3) in
+    let r = Int64.shift_right_logical (bits64 s) 1 in
     let v = Int64.rem r n in
     if Int64.sub r v > Int64.add (Int64.sub Int64.max_int n) 1L
     then int64aux s n
@@ -255,20 +177,7 @@ module State = struct
 
   let float s bound = rawfloat s *. bound
 
-  let bool s = (bits s land 1 = 0)
-
-  (*
-  let bits32 s =
-    let b1 = Int32.(shift_right_logical (of_int (bits s)) 14) in  (* 16 bits *)
-    let b2 = Int32.(shift_right_logical (of_int (bits s)) 14) in  (* 16 bits *)
-    Int32.(logor b1 (shift_left b2 16))
-
-  let bits64 s =
-    let b1 = Int64.(shift_right_logical (of_int (bits s)) 9) in  (* 21 bits *)
-    let b2 = Int64.(shift_right_logical (of_int (bits s)) 9) in  (* 21 bits *)
-    let b3 = Int64.(shift_right_logical (of_int (bits s)) 8) in  (* 22 bits *)
-    Int64.(logor b1 (logor (shift_left b2 21) (shift_left b3 42)))
-  *)
+  let bool s = Int32.logand (bits32 s) 1l = 0l
 
   let nativebits =
     if Nativeint.size = 32
