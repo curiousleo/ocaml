@@ -30,6 +30,81 @@ external random_seed: unit -> int array = "caml_sys_random_seed"
 
 module State = struct
 
+  (****************)
+  (* Xoshiro256++ *)
+  (****************)
+
+  (*
+  type t = {
+    mutable s0 : int64;
+    mutable s1 : int64;
+    mutable s2 : int64;
+    mutable s3 : int64;
+  }
+
+  let new_state () = {
+    s0 = 0xd7ba58ac4f5f8ebaL;
+    s1 = 0x3602218b79c90891L;
+    s2 = 0x35377574a3001a9eL;
+    s3 = 0xf302f188176dfd1cL;
+  }
+
+  let rotl x k =
+    Int64.(logor (shift_left x k) (shift_right_logical x (64 - k)))
+
+  let step s =
+    let t = Int64.shift_left s.s1 17 in
+    s.s2 <- Int64.logxor s.s2 s.s0;
+    s.s3 <- Int64.logxor s.s3 s.s1;
+    s.s1 <- Int64.logxor s.s1 s.s2;
+    s.s0 <- Int64.logxor s.s0 s.s3;
+    s.s2 <- Int64.logxor s.s2 t;
+    s.s3 <- rotl s.s3 45
+
+  let bits64 s =
+    let result = Int64.(add (rotl (add s.s0 s.s3) 23) s.s0) in
+    step s;
+    result
+
+  let bits32 s =
+    let b64 = bits64 s in
+    Int64.(to_int32 (logand b64 0xFFFFFFFFL))
+
+  let mix s seed =
+    s.s0 <- Int64.(add s.s0 (of_int seed));
+    step s
+
+  let full_init s seed =
+    s.s0 <- 0xd7ba58ac4f5f8ebaL;
+    s.s1 <- 0x3602218b79c90891L;
+    s.s2 <- 0x35377574a3001a9eL;
+    s.s3 <- 0xf302f188176dfd1cL;
+    step s;
+    for i = 0 to Array.length seed - 1 do
+      mix s seed.(i)
+    done;
+    for _ = 0 to 16 do
+      step s
+    done
+
+  let copy s = {
+    s0 = s.s0;
+    s1 = s.s1;
+    s2 = s.s2;
+    s3 = s.s3;
+  }
+
+  let assign t s =
+    t.s0 <- s.s0;
+    t.s1 <- s.s1;
+    t.s2 <- s.s2;
+    t.s3 <- s.s3
+  *)
+
+  (****************)
+  (* PCG RXS-M-XS *)
+  (****************)
+
   type t = int64 ref
 
   let new_state () = ref 0x4d595df4d0f33173L
@@ -46,14 +121,6 @@ module State = struct
     (* return (xorshifted >> rot) | (xorshifted << ((-rot) & 31)); *)
     Int32.(logor (shift_right_logical xorshifted rot) (shift_left xorshifted (~-rot land 31)))
 
-  (*
-  inline uint64_t pcg_output_rxs_m_xs_64_64(uint64_t state)
-  {
-      uint64_t word = ((state >> ((state >> 59u) + 5u)) ^ state)
-                      * 12605985483714917081ull;
-      return (word >> 43u) ^ word;
-  }
-  *)
   let rxs_m_xs state =
     let rot = Int64.(to_int (add (shift_right_logical state 59) 5L)) in
     let xorshifted = Int64.(logxor (shift_right_logical state rot) state) in
@@ -74,65 +141,110 @@ module State = struct
     s := Int64.(add !s (of_int seed));
     step s
 
+  let init s seed =
+    s := 0L;
+    step s;
+    mix s seed
+
   let full_init s seed =
     s := 0L;
     step s;
-    Array.iter (mix s) seed
+    for i = 0 to Array.length seed - 1 do
+      mix s seed.(i)
+    done
+
+  let copy s = ref !s
+
+  let assign t s = t := !s
+
+  (* Returns 30 random bits as an integer 0 <= x < 1073741824 *)
+  let bits s =
+    Int32.(to_int (logand (bits32 s) 0x3FFFFFFFl))
+
+  (*****************************)
 
   let make seed =
     let result = new_state () in
     full_init result seed;
     result
 
-
   let make_self_init () = make (random_seed ())
 
-  let copy s =
-    let result = ref !s in
-    result
 
+  let rec intaux s n =
+    let r = bits s in
+    let v = r mod n in
+    if r - v > 0x3FFFFFFF - n + 1 then intaux s n else v
 
-  (* Returns 30 random bits as an integer 0 <= x < 1073741824 *)
-  let bits s =
-    Int32.(to_int (logand (bits32 s) 0x3FFFFFFFl))
+  let int s bound =
+    if bound > 0x3FFFFFFF || bound <= 0
+    then invalid_arg "Random.int"
+    else intaux s bound
 
-  let rec int32aux s n =
-    let r = bits32 s in
-    let v = Int32.rem r n in
-    if Int32.sub r v > Int32.add (Int32.sub Int32.max_int n) 1l
-    then int32aux s n
-    else v
-
-  let rec int64aux s n =
-    let r = bits64 s in
-    let v = Int64.rem r n in
-    if Int64.sub r v > Int64.add (Int64.sub Int64.max_int n) 1L
-    then int64aux s n
-    else v
+  let rec int63aux s n =
+    let max_int_32 = (1 lsl 30) + 0x3FFFFFFF in (* 0x7FFFFFFF *)
+    let b1 = bits s in
+    let b2 = bits s in
+    let (r, max_int) =
+      if n <= max_int_32 then
+        (* 31 random bits on both 64-bit OCaml and JavaScript.
+           Use upper 15 bits of b1 and 16 bits of b2. *)
+        let bpos =
+          (((b2 land 0x3FFFC000) lsl 1) lor (b1 lsr 15))
+        in
+          (bpos, max_int_32)
+      else
+        let b3 = bits s in
+        (* 62 random bits on 64-bit OCaml; unreachable on JavaScript.
+           Use upper 20 bits of b1 and 21 bits of b2 and b3. *)
+        let bpos =
+          ((((b3 land 0x3FFFFE00) lsl 12) lor (b2 lsr 9)) lsl 20)
+            lor (b1 lsr 10)
+        in
+          (bpos, max_int)
+    in
+    let v = r mod n in
+    if r - v > max_int - n + 1 then int63aux s n else v
 
   let full_int s bound =
     if bound <= 0 then
       invalid_arg "Random.full_int"
     else if bound > 0x3FFFFFFF then
-      Int64.(to_int (int64aux s (of_int bound)))
+      int63aux s bound
     else
-      Int32.(to_int (int32aux s (of_int bound)))
+      intaux s bound
 
 
-  let int s bound =
-    if bound > 0x3FFFFFFF || bound <= 0
-    then invalid_arg "Random.int"
-    else Int32.(to_int (int32aux s (of_int bound)))
+  let rec int32aux s n =
+    let b1 = Int32.of_int (bits s) in
+    let b2 = Int32.shift_left (Int32.of_int (bits s land 1)) 30 in
+    let r = Int32.logor b1 b2 in
+    let v = Int32.rem r n in
+    if Int32.sub r v > Int32.add (Int32.sub Int32.max_int n) 1l
+    then int32aux s n
+    else v
 
   let int32 s bound =
     if bound <= 0l
     then invalid_arg "Random.int32"
     else int32aux s bound
 
+
+  let rec int64aux s n =
+    let b1 = Int64.of_int (bits s) in
+    let b2 = Int64.shift_left (Int64.of_int (bits s)) 30 in
+    let b3 = Int64.shift_left (Int64.of_int (bits s land 7)) 60 in
+    let r = Int64.logor b1 (Int64.logor b2 b3) in
+    let v = Int64.rem r n in
+    if Int64.sub r v > Int64.add (Int64.sub Int64.max_int n) 1L
+    then int64aux s n
+    else v
+
   let int64 s bound =
     if bound <= 0L
     then invalid_arg "Random.int64"
     else int64aux s bound
+
 
   let nativeint =
     if Nativeint.size = 32
@@ -150,7 +262,20 @@ module State = struct
 
   let float s bound = rawfloat s *. bound
 
-  let bool s = Int32.(logand (bits32 s) 1l = 0l)
+  let bool s = (bits s land 1 = 0)
+
+  (*
+  let bits32 s =
+    let b1 = Int32.(shift_right_logical (of_int (bits s)) 14) in  (* 16 bits *)
+    let b2 = Int32.(shift_right_logical (of_int (bits s)) 14) in  (* 16 bits *)
+    Int32.(logor b1 (shift_left b2 16))
+
+  let bits64 s =
+    let b1 = Int64.(shift_right_logical (of_int (bits s)) 9) in  (* 21 bits *)
+    let b2 = Int64.(shift_right_logical (of_int (bits s)) 9) in  (* 21 bits *)
+    let b3 = Int64.(shift_right_logical (of_int (bits s)) 8) in  (* 22 bits *)
+    Int64.(logor b1 (logor (shift_left b2 21) (shift_left b3 42)))
+  *)
 
   let nativebits =
     if Nativeint.size = 32
@@ -173,13 +298,13 @@ let bits64 () = State.bits64 default
 let nativebits () = State.nativebits default
 
 let full_init seed = State.full_init default seed
-let init seed = State.full_init default [| seed |]
+let init seed = State.init default seed
 let self_init () = full_init (random_seed())
 
 (* Manipulating the current state. *)
 
 let get_state () = State.copy default
-let set_state s = default := !s
+let set_state s = State.assign default s
 
 (********************
 

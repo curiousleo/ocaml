@@ -18,6 +18,10 @@ let chisquare n f =
     Array.fold_left
       (fun s x -> let d = float x -. expected in d *. d +. s)
       0.0 freq in
+  (*
+  Array.iter (fun x -> Printf.printf "%03d " x) freq;
+  Printf.printf "\n";
+  *)
   let chi2 = t /. expected in
   let degfree = float r -. 1.0 in
   (* The degree of freedom is high, so we approximate as a normal
@@ -28,7 +32,7 @@ let chisquare n f =
   (chi2, degfree +. 4.0 *. sqrt (2.0 *. degfree))
 
 let test name f =
-  let (chi2, limit) = chisquare 100_000 f in
+  let (chi2, limit) = chisquare 200_000 f in
   if not (chi2 <= limit)
   then (
     Printf.printf "%s: suspicious result\n%!" name;
